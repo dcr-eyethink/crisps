@@ -1,0 +1,14 @@
+---
+title: "Social Media Trees Pilot"
+output: html_notebook
+---
+
+24 person pilot run, with seperate vs integrated blocks
+https://app.gorilla.sc/admin/experiment/238955/design
+
+Download the data direct from github, using base tools
+
+```{r}
+pres_data <- read.csv()
+```
+
