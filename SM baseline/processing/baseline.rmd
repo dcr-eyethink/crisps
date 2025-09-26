@@ -7,70 +7,118 @@ output: github_document
 
 60 person pilot run with 16 posts.
 
-Later, update this to use base R and download the data direct from github
-
-Read in data using eyethinkdata tools
+Here are the packages that this code uses
 
 ```{r}
-library(eyethinkdata)
-data <- data_collator_gorilla("data")
+library(data.table) 
+library(ggplot2)
 ```
+
+Download data archive from github, and unzip into a folder called "gorilla_data"
+
+```{r}
+download.file(url="https://github.com/dcr-eyethink/crisps/raw/refs/heads/master/SM%20baseline/gorilla_data.zip",destfile = "gorilla_data.zip")
+unzip("gorilla_data.zip")
+```
+
+This folder contains the download from gorilla for the baseline experiment. If you have more gorilla data downloads from other experiments, you could add them into this folder and run the same code below to import it all. I've defined a handy function to read in gorilla data files for the tasks and the questionnaires, and put them into a list called data.
+
+```{r}
+# this is a function to import gorilla data into data$task and data$questionnaire
+gorilla_import <- function(folder){
+csvfiles <- list.files(folder,pattern=".csv",full.names = T, recursive = T)
+data <- list()
+for (datatype in c("task","questionnaire")){
+for  (f in grep(x=csvfiles,pattern=datatype,value=T)){
+  compiled_data <- data.table()
+  newdata <- read.csv(f)  # read in data file
+  newdata$filename <- f # add in the file name to data so we can check where data came from
+  newdata$pid <- as.factor(newdata$Participant.Private.ID) # make an variable for an anon. participant ID code
+  # make sure that the combined data has the column names from all files
+  nn <- colnames(newdata)[!colnames(newdata) %in% colnames(compiled_data)]
+  if(length(nn)>0){compiled_data[,nn] <- NA}
+  nn <- colnames(compiled_data)[!colnames(compiled_data) %in% colnames(newdata)]
+  if(length(nn)>0){newdata[,nn] <- NA}
+  compiled_data <- rbind(compiled_data,newdata) # compile data
+}
+  data[[datatype]] <- compiled_data
+}
+  return(data)
+}
+
+data <- gorilla_import("gorilla_data")
+
+```
+
 
 # Social Media presentation
 
-Make pres_data_full by filtering gorilla task data to get the information about social media posts. This has one row per social media reaction, share, comment, or continue.
-
-We want the data with one row per post, and all the reactions in different columns. Let's start with the exposure duration, how long they looked at each post before pressing continue button.
+Make pres_data by filtering gorilla task data to get the information about social media posts. This will eventually one row per social media reaction, share, comment, or continue. Let's start with the exposure duration, how long they looked at each post before pressing continue button.
 
 ```{r}
-pres_data <- data$data_task[Display=="post_single" &  Response.Type=="continue",
+pres_data <- data$task[Display=="post_single" &  Response.Type=="continue",
                             .(pid,datetime=Local.Date.and.Time,trial=Trial.Number,
-                                                    trial_type=Spreadsheet..type,
+                                                    type=Spreadsheet..type,
                                                     item=Spreadsheet..item, 
-                                                    exposure_time=rt)]
+                                                    exposure_time=Reaction.Time)]
 ```
 
-Now let's get all the reactions. Then we'll reshape to one trial per line, and add to pres_data via the participant ID and the trial number. We then set the NAs to zero to indicate where a reaction wasn't given. And we count up the total reaction count. Note that we could get rt data for the reactions if we wanted.
+Now let's filter for all all the reactions. Then we'll reshape to one trial per line, and add to pres_data via the participant ID and the trial number. We then set the NAs to zero to indicate where a reaction wasn't given. And we count up the total reaction count. Note that we could get rt data for the reactions if we wanted.
 
 ```{r}
-react_data <- data$data_task[Display=="post_single" &  Response.Type=="action" & Tag =="react",
-                            .(pid,trial=Trial.Number,reaction=paste0("react_",Response),rt,react=1)]
-pres_data <- pid_merge(pres_data,dcast(react_data,fun.aggregate = sum,
-                                       formula = pid+trial~reaction,value.var = "react"),
-                       link = c("pid","trial"))
-pres_data[is.na(pres_data),] <- 0
-pres_data[, react:=react_angry+react_disgust +react_heart+react_laugh+react_like+react_sad+react_surprise]
+react_data <- data$task[Display=="post_single" &  Response.Type=="action" & Tag =="react",
+                            .(pid,trial=Trial.Number,
+                              reaction=paste0("react_",Response),rt,react=1)]
+react_data <- dcast(react_data,fun.aggregate = sum,formula = pid+trial~reaction,value.var = "react") #reshape to one post per line
+pres_data <- merge(pres_data,react_data, by = c("pid","trial"),all.x = T) #merge with pres_data
+pres_data[is.na(pres_data),] <- 0 # replace NAs where there was no reaction with zeros so we can count up properly
+pres_data[, react:=react_angry+react_disgust +react_heart+react_laugh+react_like+react_sad+react_surprise] # count up all the reactions
 ```
 
-Let's do the same with the shares
+Let's do the same with the data about shares
 
 ```{r}
-share_data <- data$data_task[Display=="post_single" &  Response.Type=="action" & Tag =="share",
+share_data <- data$task[Display=="post_single" &  Response.Type=="action" & Tag =="share",
                             .(pid,trial=Trial.Number,share=1)]
-pres_data <- pid_merge(pres_data,share_data,
-                       link = c("pid","trial"))
+pres_data <- merge(pres_data,share_data,by= c("pid","trial"),all.x = T)
 pres_data[is.na(share),share:=0]
 ```
 
-Now if any comments are made, we can add them to pres_data
+Now if any comments are made, we can add the comments to pres_data, and make a comment_made code (0 or 1) so that we can count them
 
 ```{r}
-comment_data <- data$data_task[Display=="post_single" &  Response.Type=="action" & Tag =="comment",
+comment_data <- data$task[Display=="post_single" &  Response.Type=="action" & Tag =="comment",
                             .(pid,trial=Trial.Number,comment = Response)]
-pres_data <- pid_merge(pres_data,comment_data,link = c("pid","trial"))
+pres_data <- merge(pres_data,comment_data,by = c("pid","trial"),all.x = T)
 pres_data$comment_made <- 0
 pres_data[!is.na(comment)]$comment_made <- 1
+write.csv(pres_data,"presentation_data.csv")
 ```
 
 # Demographics and behavioural intentions
 
-Get the survey data from the start and the behavioural intentions data from the end
+Get the survey data from the start 
+
+```{r}
+data_demo <- data$questionnaire[Task.Name=="Demographics",.(pid, item=Object.Name,key=Key,r=Response)] #filter for info
+data_demo <-dcast(data_demo[!r=="BEGIN" & !r=="END" & !key==""],
+      pid~item+key, value.var = "r")  #reshape
+# here we are tifying up column names and types, making sure that numbers are identified correctly 
+number_cols <- c("age_value","live_dist_value", "live_time_value",
+                 grep(x=colnames(data_demo),pattern="quantised",value=T),
+                 grep(x=colnames(data_demo),pattern="socialmed_platform",value=T))
+for (j in number_cols) {set(data_demo, j = j, value = as.numeric(data_demo[[j]]))}
+cols_value <- grep(x=colnames(data_demo),pattern="value",value=T)
+setnames(data_demo, old = cols_value, new=gsub(x=cols_value,pattern = "_value",replacement = "") )
+```
+
+And the behavioural intentions data from the end
 
 ```{r}
 data_demo <- gorilla_q_parse_qb2(data,qlist = "Demographics")
-data_behav <- data$data_q[Task.Name=="Behavioural intentions" & Response.Type=="response" &  (Question.Key=="trees_find_out" | Question.Key=="trees_water")]
+data_behav <- data$questionnaire[Task.Name=="Behavioural intentions" & Response.Type=="response" &  (Question.Key=="trees_find_out" | Question.Key=="trees_water")]
 data_behav[,Response:=as.numeric(Response)]
-data_behav <- dcast(data_behav,
+data_behav <- dcast(data_behav,"live_time_"
       pid~Question.Key,value.var = "Response")
 
 ```
@@ -78,55 +126,33 @@ data_behav <- dcast(data_behav,
 
 # Memory
 
-Labeling the memory items - we won't need this after pilot data as labels will be embedded
-
-```{r}
-mem_data <- data$data_task[Display=="test item"]
-```
-
 Now we can get the memory data performance and process it
 
 ```{r}
-mem_data <- data$data_task[Display=="test item" &  (Response=="true" | Response=="false"),
+mem_data <- data$task[Display=="test item" &  (Response=="true" | Response=="false"),
                             .(pid,trial=Trial.Number,
                               type=Spreadsheet..type,memitem=Spreadsheet..memitem,
                               response=ifelse(Response=="true",TRUE,FALSE),
                               acc=Correct,rt)]
 ```
 
-Score the memory data
+Score participants' memory data by calculating mean accuracy for trees and filler trials
+
 ```{r}
 memacc_data <- dcast(mem_data,pid~type,value.var = "acc",fun.aggregate = mean)
 setnames(memacc_data,old=c("filler","trees"),new=c("mem_acc_filler","mem_acc_trees"))
 memrt_data <-dcast(mem_data[acc==1],pid~type,value.var = "rt",fun.aggregate = mean)
 setnames(memrt_data,old=c("filler","trees"),new=c("mem_rt_filler","mem_rt_trees"))
+write.csv(mem_data,"memory_data.csv")
 ```
 
-I don't think that we need dprime here
-
-```{r}
-# mem_data[response==TRUE & acc==1,s:="hit"]
-# mem_data[response==TRUE & acc==0,s:="miss"]
-# mem_data[response==FALSE & acc==1,s:="cr"]
-# mem_data[response==FALSE & acc==0,s:="fa"]
-# 
-# mdw <- dcast(mem_data[,.(n=.N),by=.(pid,type,s)],
-#                formula = pid+type~s,
-#                value.var = "n",fill = 0)
-# 
-#   ## exclude items with zero critical or zero foils
-#   mdw <- mdw[ !(cr+fa==0 | hit+miss==0) ]
-# 
-#   mdw <- mdw[,psycho::dprime(n_hit=hit,n_miss=miss,n_fa = fa,n_cr = cr),by=.(pid,type)]
-```
-
-# Combine into participants data
+# Combine into participants data 
 
 Now we want to combine all these data sources into one dataframe with one row per participant
 
 ```{r}
 pd <- pid_merge(data_demo,
-dcast(pres_data[trial_type=="filler" | trial_type=="trees"],pid~trial_type,fun.aggregate = mean,value.var =  c("exposure_time", "react", "share",  "comment_made"  )),
+dcast(pres_data[type=="filler" | type=="trees"],pid~trial_type,fun.aggregate = mean,value.var =  c("exposure_time", "react", "share",  "comment_made"  )),
 data_behav,
 memacc_data,
 memrt_data)
@@ -143,13 +169,13 @@ Lets see how the design effects things...
 We should trim outliers systematically - here just cutting off at 120sec. Also perhaps discard those with <1sec?
 
 ```{r message=FALSE, warning=FALSE}
-pirateye(pres_data,x_condition = "trial_type",dv="exposure_time",ylim = c(0,120000),dots=F)
+pirateye(pres_data,x_condition = "type",dv="exposure_time",ylim = c(0,120000),dots=F)
 ```
 
 ## Reactions, shares, comments
 
 ```{r}
-pirateye(pres_data, x_condition = "variable",colour_condition = "trial_type",
+pirateye(pres_data, x_condition = "variable",colour_condition = "type",
          dv=c("react","react","share",  "share",
               "comment_made",  "comment_made"  ),violin = F,dots=F)
 ```
