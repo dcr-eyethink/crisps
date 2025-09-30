@@ -2,19 +2,21 @@
 title: "SM Trees Baseline N=60 "
 author: "dcr"
 date: "2025-09-25"
-output: github_document
+output: html_document
 ---
 
-60 person pilot run with 16 posts.
+This document runs through how to process and plot data from the baseline version of the gorilla social media. This experiment was run in September 2025 on 60 people using Prolific. 16 social media posts were presented to participants, who could interact with them by sharing, commenting or reacting. They were then quizzed on their memory for some of the content, and asked about some behavioural intentions relevant to the posts. Of particular interest here was their responses to the 'trees' post, which was attempting to inform and motive people to look after their local street trees. 
 
-Here are the packages that this code uses
+The .rmd version of this file can be downloaded and run locally from https://github.com/dcr-eyethink/crisps/raw/refs/heads/master/SM%20baseline/processing/baseline.rmd and run locally 
+
+First load up the packages that this code uses
 
 ```{r}
 library(data.table) 
 library(ggplot2)
 ```
 
-Download data archive from github, and unzip into a folder called "gorilla_data"
+Download data archive from github, and unzip into a local folder called "gorilla_data"
 
 ```{r}
 download.file(url="https://github.com/dcr-eyethink/crisps/raw/refs/heads/master/SM%20baseline/gorilla_data.zip",destfile = "gorilla_data.zip")
