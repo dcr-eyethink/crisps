@@ -29,8 +29,8 @@ gorilla_import <- function(folder){
 csvfiles <- list.files(folder,pattern=".csv",full.names = T, recursive = T)
 data <- list()
 for (datatype in c("task","questionnaire")){
-for  (f in grep(x=csvfiles,pattern=datatype,value=T)){
   compiled_data <- data.table()
+for  (f in grep(x=csvfiles,pattern=datatype,value=T)){
   newdata <- read.csv(f)  # read in data file
   newdata$filename <- f # add in the file name to data so we can check where data came from
   newdata$pid <- as.factor(newdata$Participant.Private.ID) # make an variable for an anon. participant ID code
@@ -63,7 +63,17 @@ pres_data <- data$task[Display=="post_single" &  Response.Type=="continue",
                                                     exposure_time=Reaction.Time)]
 ```
 
-Now let's filter for all all the reactions. Then we'll reshape to one trial per line, and add to pres_data via the participant ID and the trial number. We then set the NAs to zero to indicate where a reaction wasn't given. And we count up the total reaction count. Note that we could get rt data for the reactions if we wanted.
+Lets identify trials that have an exposure time outside of 3 SDs from the mean
+
+```{r}
+pres_data[,use:=TRUE]
+pres_data[exposure_time<mean(exposure_time)-3*sd(exposure_time) | 
+            exposure_time>mean(exposure_time)+3*sd(exposure_time),
+          use:=FALSE]
+pres_data[!(use)]
+```
+
+Now let's filter and extract all the reactions. Then we'll reshape to one trial per line, and add to pres_data via the participant ID and the trial number. We then set the NAs to zero to indicate where a reaction wasn't given. And we count up the total reaction count. Note that we could get rt data for the reactions if we wanted.
 
 ```{r}
 react_data <- data$task[Display=="post_single" &  Response.Type=="action" & Tag =="react",
@@ -84,7 +94,7 @@ pres_data <- merge(pres_data,share_data,by= c("pid","trial"),all.x = T)
 pres_data[is.na(share),share:=0]
 ```
 
-Now if any comments are made, we can add the comments to pres_data, and make a comment_made code (0 or 1) so that we can count them
+Now if any comments are made, we can add the comments to pres_data, and make a comment_made varible (0 or 1) so that we can count them
 
 ```{r}
 comment_data <- data$task[Display=="post_single" &  Response.Type=="action" & Tag =="comment",
@@ -100,10 +110,10 @@ write.csv(pres_data,"presentation_data.csv")
 Get the survey data from the start 
 
 ```{r}
-data_demo <- data$questionnaire[Task.Name=="Demographics",.(pid, item=Object.Name,key=Key,r=Response)] #filter for info
+data_demo <- data$questionnaire[Task.Name=="Demographics",.(pid, item=Object.Name,key=Key,r=Response)]  #filter for info
 data_demo <-dcast(data_demo[!r=="BEGIN" & !r=="END" & !key==""],
-      pid~item+key, value.var = "r")  #reshape
-# here we are tifying up column names and types, making sure that numbers are identified correctly 
+      pid~item+key, value.var = "r")   #reshape
+# here we are tidying up column names and types, making sure that numbers are identified correctly 
 number_cols <- c("age_value","live_dist_value", "live_time_value",
                  grep(x=colnames(data_demo),pattern="quantised",value=T),
                  grep(x=colnames(data_demo),pattern="socialmed_platform",value=T))
@@ -115,12 +125,9 @@ setnames(data_demo, old = cols_value, new=gsub(x=cols_value,pattern = "_value",r
 And the behavioural intentions data from the end
 
 ```{r}
-data_demo <- gorilla_q_parse_qb2(data,qlist = "Demographics")
-data_behav <- data$questionnaire[Task.Name=="Behavioural intentions" & Response.Type=="response" &  (Question.Key=="trees_find_out" | Question.Key=="trees_water")]
-data_behav[,Response:=as.numeric(Response)]
-data_behav <- dcast(data_behav,"live_time_"
-      pid~Question.Key,value.var = "Response")
-
+data_behav <- data$questionnaire[Task.Name=="Behavioural intentions" & Key=="value",
+                                 .(pid, item=Object.Name,response=as.numeric(Response))]  #filter for info
+write.csv(data_behav,"behav_intentions.csv")
 ```
 
 
@@ -133,51 +140,77 @@ mem_data <- data$task[Display=="test item" &  (Response=="true" | Response=="fal
                             .(pid,trial=Trial.Number,
                               type=Spreadsheet..type,memitem=Spreadsheet..memitem,
                               response=ifelse(Response=="true",TRUE,FALSE),
-                              acc=Correct,rt)]
+                              acc=Correct,rt=as.numeric(Reaction.Time))]
 ```
 
-Score participants' memory data by calculating mean accuracy for trees and filler trials
+Let's identify outliers. If rt is greater than 3 SDs from the mean then use = FALSE, otherwise true
 
 ```{r}
-memacc_data <- dcast(mem_data,pid~type,value.var = "acc",fun.aggregate = mean)
+mem_data[,use:=TRUE]
+mem_data[rt<mean(rt)-3*sd(rt) | rt>mean(rt)+3*sd(rt), use:=FALSE]
+```
+
+
+Score participants' memory data by calculating mean accuracy for trees and filler trials, excluding outliers. 
+
+```{r}
+memacc_data <- dcast(mem_data[(use)],pid~type,value.var = "acc",fun.aggregate = mean)
 setnames(memacc_data,old=c("filler","trees"),new=c("mem_acc_filler","mem_acc_trees"))
-memrt_data <-dcast(mem_data[acc==1],pid~type,value.var = "rt",fun.aggregate = mean)
+memrt_data <-dcast(mem_data[acc==1 & (use)],pid~type,value.var = "rt",fun.aggregate = mean)
 setnames(memrt_data,old=c("filler","trees"),new=c("mem_rt_filler","mem_rt_trees"))
 write.csv(mem_data,"memory_data.csv")
 ```
 
 # Combine into participants data 
 
-Now we want to combine all these data sources into one dataframe with one row per participant
+Now we want to combine all these data sources into one dataframe with one row per participant. We're just going to include data that's relevent to the trees in this summary participant data
 
 ```{r}
-pd <- pid_merge(data_demo,
-dcast(pres_data[type=="filler" | type=="trees"],pid~trial_type,fun.aggregate = mean,value.var =  c("exposure_time", "react", "share",  "comment_made"  )),
-data_behav,
-memacc_data,
-memrt_data)
-pd <- pd[!is.na(pid)]
+pd <- merge(x=data_demo,by = "pid",all = T,
+            y=pres_data[type=="trees",.(pid,exposure_time, react, share,  comment_made,comment)])
+pd <- merge(x=pd,by = "pid",all = T,
+            y=dcast(data_behav,pid~item,
+                    value.var = "response")[,.(pid, trees_find_out, trees_water)] ) #just get the tree intentions
+pd <- merge(x=pd,by = "pid",all = T,y=memacc_data)
+pd <- merge(x=pd,by = "pid",all = T,y=memrt_data)
+            
 write.csv(pd,"participant_data.csv")
 ```
 
 # Analyse the data
 
-Lets see how the design effects things...
+Now we're going to plat some descriptive stats comparing the filler trials with the trees trials. In the full experiment howewver, we'll be comparing the trees trial with an experimental contrast where something has been manipulated. 
+
+First define a nice RDI plot that we can reuse
+
+ADD IN SUMMARY TABLE PRINTED OUT
+```{r}
+means_plot <-function(data,x,y,violin=F,dots=F){ 
+  p <- ggplot(data=data, aes(x=.data[[x]],y=.data[[y]],colour=.data[[x]],fill=.data[[x]])) + 
+    theme_bw()+theme(legend.position = "none")+
+    stat_summary(fun = 'mean',geom = 'bar', alpha=.2,width=.6)+
+    stat_summary(fun.data = mean_se,  geom = "errorbar",alpha=.8,width=.4,size=1)
+  if (violin){p <- p+geom_violin(alpha=.2, width=.6)}
+  if (dots){p <- p+geom_point(position=position_jitterdodge(),alpha=.1)}
+  meanstable <- data[,.(mean=mean(get(y)),sd=sd(get(y)),N=.N) ,by=x]
+  return(list(meanstable=meanstable,plot=p))
+  }
+```
 
 ## Exposure time
 
-We should trim outliers systematically - here just cutting off at 120sec. Also perhaps discard those with <1sec?
+How long (milliseconds) did they look at each post
 
 ```{r message=FALSE, warning=FALSE}
-pirateye(pres_data,x_condition = "type",dv="exposure_time",ylim = c(0,120000),dots=F)
+means_plot(data=pres_data[(use)],x="type",y="exposure_time",violin = T,dots=T)
+
 ```
 
 ## Reactions, shares, comments
 
 ```{r}
-pirateye(pres_data, x_condition = "variable",colour_condition = "type",
-         dv=c("react","react","share",  "share",
-              "comment_made",  "comment_made"  ),violin = F,dots=F)
+means_plot(data=pres_data[(use)],x="type",y="react")
+
 ```
 
 
@@ -186,8 +219,7 @@ pirateye(pres_data, x_condition = "variable",colour_condition = "type",
 Accuracy across 4 items
 
 ```{r message=FALSE, warning=FALSE}
-pirateye(mem_data[,.(acc=mean(acc)),by=.(pid,type)], colour_condition = "type",
-           dv="acc",violin = F)
+means_plot(data=mem_data[,.(acc=mean(acc)),by=.(pid,type)],x="type",y="acc",dots=T)
 
 ```
 
@@ -196,15 +228,15 @@ So they are slghtly above chance for all posts
 # RT when correct
 
 ```{r message=FALSE, warning=FALSE}
-pirateye(mem_data, colour_condition = "type",
-         dv="rt",ylim = c(0,20000))
+means_plot(mem_data[(use) & acc==1], x = "type",y="rt",violin = T,dots=T)
 ```
 
 # Behavioural intentions
 
 ```{r message=FALSE, warning=FALSE}
-pirateye(data_behav, colour_condition = "variable",
-         dv=c("trees_find_out","trees_water"))
+result <- means_plot(data_behav, x = "item",y="response",violin = F,dots=T)
+result$meanstable
+result$plot+ylim(0,8)
 
 ```
 
